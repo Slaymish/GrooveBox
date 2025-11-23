@@ -1,0 +1,12 @@
+{
+  "bpm": 90,
+  "beats_per_bar": 16,
+  "pads": [
+    {"id": 0, "key": "q", "name": "Kick",  "sample": "samples/kick.wav"},
+    {"id": 1, "key": "w", "name": "Snare", "sample": "samples/snare.wav"},
+    {"id": 2, "key": "e", "name": "Hat",   "sample": "samples/hat.wav"},
+    {"id": 3, "key": "c", "name": "Clap",  "sample": "samples/clap.wav"},
+    {"id": 4, "key": "a", "name": "Stab1", "sample": "samples/stab1.wav"},
+    {"id": 7, "key": "f", "name": "FX",    "sample": "samples/fx.wav"}
+  ]
+}
