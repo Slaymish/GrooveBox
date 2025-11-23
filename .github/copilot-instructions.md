@@ -1,60 +1,64 @@
 # Groovebox Engine AI Instructions
 
 ## Project Overview
-This is a Python-based Groovebox application (drum machine/sequencer) built using `pygame` for both the graphical interface and audio playback. The core logic resides in `host/engine/groovebox/`.
+Python-based Groovebox (drum machine/sequencer) using `pygame` for UI and audio.
+Core logic is in `host/engine/groovebox/`.
 
 ## Architecture
-The application follows a monolithic architecture with clear separation of concerns:
-
-- **Entry Point**: `host/engine/groovebox/main.py` initializes the configuration and UI.
-- **UI & Main Loop** (`ui_pygame.py`):
-  - The `GrooveboxUI` class owns the application lifecycle.
-  - Runs the main `while running:` loop.
-  - Handles `pygame` events (keyboard input) and rendering.
-  - Calls `sequencer.tick()` every frame to drive the audio engine.
-- **Sequencer** (`sequencer.py`):
-  - `Sequencer` class manages playback state (play/record, BPM, swing).
-  - Uses `time.monotonic()` for precise musical timing, independent of the UI framerate.
-  - Manages `Pattern`, `Track`, and `Step` data structures.
-- **Audio** (`audio.py`):
+- **Entry Point**: `host/engine/groovebox/main.py`. **Must be run from the repository root** to resolve relative paths (e.g., `config/pad.json`).
+- **UI (`ui_pygame.py`)**:
+  - `GrooveboxUI` manages the application lifecycle and main loop.
+  - Handles input and rendering.
+  - Calls `sequencer.tick()` every frame.
+- **Sequencer (`sequencer.py`)**:
+  - `Sequencer` manages playback state, BPM, swing, and patterns (A/B/Fill).
+  - Uses `time.monotonic()` for precise timing, independent of UI framerate.
+  - Data models: `Pattern`, `Track`, `Step` (dataclasses).
+- **Audio (`audio.py`)**:
   - `AudioEngine` wraps `pygame.mixer`.
-  - Handles sample loading and playback.
-  - **Pattern**: Decoupled from the UI; the sequencer triggers sounds via this engine.
-- **Configuration** (`config.py`):
-  - Loads settings from JSON files (e.g., `config/pad.json`).
-  - Uses `dataclasses` for typed configuration objects.
+  - Handles sample loading, trimming, and playback.
+- **Config (`config.py`)**:
+  - Loads `config/pad.json`.
+  - Typed configuration using dataclasses.
 
 ## Development Workflow
 
-### Running the Application
-Run the application from the repository root to ensure relative paths (like config loading) work correctly:
+### Running
+Execute from the repository root:
 ```bash
-python host/engine/groovebox/main.py
+venv/bin/python3 host/engine/groovebox/main.py
 ```
-*Note: Ensure `pygame` is installed in your environment.*
 
-### Key Dependencies
-- **Pygame**: Used for window management, input handling, and audio mixing.
-- **Dataclasses**: Extensively used for data modeling (`Step`, `Track`, `Pattern`).
+### Dependencies
+- `pygame` (UI & Audio)
+- `numpy`
+- `soundfile`
 
-## Coding Conventions & Patterns
+## Key Patterns & Conventions
 
-### Type Hinting
-- All functions and methods must have type hints.
-- Use `list[Type]` instead of `List[Type]` (modern Python syntax).
+### Timing
+- **Do not** use `pygame.time.Clock` for musical timing.
+- `Sequencer.tick()` calculates delta time using `time.monotonic()` to ensure rhythmic precision regardless of frame rate.
 
 ### Data Structures
-- Prefer `@dataclass` for state and configuration objects.
+- Use `@dataclass` for all state and config objects.
 - Example:
   ```python
   @dataclass
   class Step:
-      state: int = 0
+      state: int = 0  # 0=off, 1=normal, 2=accent
   ```
 
-### Timing & Audio
-- **Do not** rely on `clock.tick()` for musical timing. The sequencer calculates delta time using `time.monotonic()`.
-- Audio operations should be non-blocking.
+### Input Handling
+- Input logic is centralized in `GrooveboxUI.handle_keydown`.
+- **Key Mappings**:
+  - `SPACE`: Toggle Play/Pause
+  - `R`: Toggle Record
+  - `TAB`: Switch Pattern (A/B)
+  - `F`: Fill (Hold)
+  - `Arrows`: BPM (Up/Down), Swing (Left/Right)
+  - `Shift/Ctrl + Arrows`: Sample Trimming (when pad selected)
+  - `[ ]`: Track Length (Shift to rotate)
 
 ### UI Implementation
 - UI logic belongs in `ui_pygame.py`.
