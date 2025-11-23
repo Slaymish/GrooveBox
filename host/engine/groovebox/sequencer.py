@@ -41,6 +41,14 @@ class Sequencer:
         self.next_pattern_key = 'A'
         self.pattern = pattern_a
         
+        # Per-track pattern state
+        # Initialize all tracks to pattern A
+        self.track_pattern_keys = {}
+        self.next_track_pattern_keys = {}
+        for track in pattern_a.tracks:
+            self.track_pattern_keys[track.pad_id] = 'A'
+            self.next_track_pattern_keys[track.pad_id] = 'A'
+        
         self.audio = audio
         self.playing = False
         self.recording = False
@@ -52,6 +60,14 @@ class Sequencer:
         self.last_tick_time = time.monotonic()
         self.undo_stack = []
         self.suppressed_steps = set() # (pad_id, step_idx) to skip playing once
+        
+        # Scenes
+        self.scenes = {} # index (int) -> dict {pad_id: pattern_key}
+        self.current_scene_index = None
+        self.next_scene_index = None
+        
+        # Fill
+        self.fill_auto_revert = False
 
     def set_bpm(self, bpm: float):
         # Update all patterns to keep BPM synced for now
@@ -67,12 +83,22 @@ class Sequencer:
     def set_fill(self, active: bool):
         self.fill_active = active
     
-    def queue_pattern_switch(self, pattern_key: str):
-        if pattern_key in self.patterns and pattern_key != 'FILL':
+    def queue_pattern_switch(self, pattern_key: str, pad_id: int = None):
+        if pattern_key not in self.patterns or pattern_key == 'FILL':
+            return
+
+        if pad_id is not None:
+            # Switch specific track
+            self.next_track_pattern_keys[pad_id] = pattern_key
+        else:
+            # Switch all tracks (global)
             self.next_pattern_key = pattern_key
+            for pid in self.next_track_pattern_keys:
+                self.next_track_pattern_keys[pid] = pattern_key
 
     def _step_duration_seconds(self) -> float:
-        base = 60.0 / self.pattern.bpm / self.pattern.beats_per_bar * 4
+        # Use BPM from pattern A as master
+        base = 60.0 / self.patterns['A'].bpm / self.patterns['A'].beats_per_bar * 4
         if self.swing == 0:
             return base
         
@@ -91,7 +117,9 @@ class Sequencer:
         if now - self.last_tick_time >= seconds_per_step:
             self.last_tick_time = now
             self._play_step()
-            self.current_step = (self.current_step + 1) % self.pattern.beats_per_bar
+            # Use beats_per_bar from pattern A as master
+            beats_per_bar = self.patterns['A'].beats_per_bar
+            self.current_step = (self.current_step + 1) % beats_per_bar
             self.total_steps += 1
             
             if self.current_step == 0:
@@ -99,13 +127,40 @@ class Sequencer:
                 if self.next_pattern_key != self.current_pattern_key:
                     self.current_pattern_key = self.next_pattern_key
                     self.pattern = self.patterns[self.current_pattern_key]
-                    self.total_steps = 0
+                
+                # Update per-track patterns
+                for pid, key in self.next_track_pattern_keys.items():
+                    self.track_pattern_keys[pid] = key
 
     def _play_step(self):
-        active_pattern = self.patterns['FILL'] if self.fill_active else self.pattern
-        any_solo = any(t.solo for t in active_pattern.tracks)
+        # We need to iterate over all available pad_ids.
+        # Assuming all patterns have the same set of pad_ids.
+        # We can use pattern A's tracks as the source of pad_ids.
+        
+        # Determine global solo state (if any track in ANY active pattern is soloed?)
+        # Or just check if any track in the CURRENTLY PLAYING mix is soloed.
+        
+        # First, gather the active tracks for this step
+        active_tracks = []
+        for ref_track in self.patterns['A'].tracks:
+            pad_id = ref_track.pad_id
+            
+            if self.fill_active:
+                pattern_key = 'FILL'
+            else:
+                pattern_key = self.track_pattern_keys.get(pad_id, 'A')
+            
+            # Find the track in the target pattern
+            # Optimization: Could cache map of pad_id -> track for each pattern
+            target_pattern = self.patterns[pattern_key]
+            track = next((t for t in target_pattern.tracks if t.pad_id == pad_id), None)
+            
+            if track:
+                active_tracks.append(track)
 
-        for track in active_pattern.tracks:
+        any_solo = any(t.solo for t in active_tracks)
+
+        for track in active_tracks:
             if not track.steps:
                 continue
             
@@ -278,7 +333,14 @@ class Sequencer:
             track.steps[i].state = 1 if is_hit else 0
 
     def _track_for_pad(self, pad_id: int) -> Track:
-        for t in self.pattern.tracks:
+        # Determine which pattern is active for this pad
+        if self.fill_active:
+            pattern_key = 'FILL'
+        else:
+            pattern_key = self.track_pattern_keys.get(pad_id, 'A')
+            
+        pattern = self.patterns[pattern_key]
+        for t in pattern.tracks:
             if t.pad_id == pad_id:
                 return t
         raise KeyError(pad_id)
@@ -341,3 +403,32 @@ class Sequencer:
         p_data = self.undo_stack.pop()
         self.pattern = self._restore_pattern(p_data)
         self.patterns[self.current_pattern_key] = self.pattern
+
+    def get_active_tracks(self) -> list[Track]:
+        """Returns the list of tracks currently active (A, B, or FILL) for each pad."""
+        tracks = []
+        # Use pattern A as the reference for order of pads
+        for ref_track in self.patterns['A'].tracks:
+            pad_id = ref_track.pad_id
+            track = self._track_for_pad(pad_id)
+            tracks.append(track)
+        return tracks
+    
+    def get_track(self, pad_id: int) -> Track:
+        """Returns the currently active track for the given pad_id."""
+        return self._track_for_pad(pad_id)
+
+    def save_scene(self, index: int):
+        """Save current track pattern configuration as a scene."""
+        self.scenes[index] = self.track_pattern_keys.copy()
+        self.current_scene_index = index
+        
+    def queue_scene_switch(self, index: int):
+        """Queue a scene switch for the next bar."""
+        if index in self.scenes:
+            self.next_scene_index = index
+            
+    def trigger_fill(self):
+        """Trigger a 1-bar fill that auto-reverts."""
+        self.fill_active = True
+        self.fill_auto_revert = True

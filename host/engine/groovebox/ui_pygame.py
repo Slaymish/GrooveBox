@@ -189,7 +189,7 @@ class GrooveboxUI:
                 self.screen.blit(s_surf, (rect.right - 25, rect.top + 5))
 
     def _draw_sequencer(self, x, y, w, h):
-        tracks = self.seq.pattern.tracks
+        tracks = self.seq.get_active_tracks()
         num_tracks = len(tracks)
         if num_tracks == 0: return
         
@@ -208,13 +208,26 @@ class GrooveboxUI:
             if track.pad_id == self.selected_pad_id:
                 pygame.draw.rect(self.screen, self.colors['panel_border'], bg_rect, 1, border_radius=4)
             
+            # Pattern Indicator
+            pat_key = self.seq.track_pattern_keys.get(track.pad_id, 'A')
+            # Check if a switch is queued
+            next_key = self.seq.next_track_pattern_keys.get(track.pad_id, pat_key)
+            
+            pat_color = self.colors['text_dim']
+            if next_key != pat_key:
+                pat_key = f"{pat_key}>{next_key}"
+                pat_color = self.colors['accent']
+                
+            pat_surf = self.font_small.render(pat_key, True, pat_color)
+            self.screen.blit(pat_surf, (x + 2, row_y + 2))
+
             # Steps
             steps = track.steps
             num_steps = len(steps)
-            step_w = (grid_w - 10) / num_steps
+            step_w = (grid_w - 25) / num_steps # Reduce width slightly for label
             
             for s_i, step in enumerate(steps):
-                sx = x + 5 + s_i * step_w
+                sx = x + 20 + s_i * step_w # Shift right for label
                 sy = row_y + 4
                 sw = step_w - 2
                 sh = row_h - gap - 8
@@ -416,7 +429,7 @@ class GrooveboxUI:
         # Sequencer
         seq_rect = pygame.Rect(left_w, header_h + 20, w - left_w - 20, h - header_h - bottom_h - 40)
         if seq_rect.collidepoint(mx, my):
-            tracks = self.seq.pattern.tracks
+            tracks = self.seq.get_active_tracks()
             num_tracks = len(tracks)
             if num_tracks == 0: return
             
@@ -515,8 +528,14 @@ class GrooveboxUI:
             else:
                 self.seq.swing = min(0.5, self.seq.swing + 0.05)
         elif key == pygame.K_TAB:
-            next_pat = 'B' if self.seq.next_pattern_key == 'A' else 'A'
-            self.seq.queue_pattern_switch(next_pat)
+            # Toggle pattern for selected pad, or global if none selected
+            if self.selected_pad_id is not None:
+                current_key = self.seq.track_pattern_keys.get(self.selected_pad_id, 'A')
+                next_pat = 'B' if current_key == 'A' else 'A'
+                self.seq.queue_pattern_switch(next_pat, self.selected_pad_id)
+            else:
+                next_pat = 'B' if self.seq.next_pattern_key == 'A' else 'A'
+                self.seq.queue_pattern_switch(next_pat)
         elif key == pygame.K_f:
             self.seq.set_fill(True)
         elif key == pygame.K_LEFTBRACKET:
@@ -590,7 +609,4 @@ class GrooveboxUI:
         return self.key_to_pad.get(char)
 
     def _track_for_pad(self, pad_id: int) -> Track:
-        for t in self.seq.pattern.tracks:
-            if t.pad_id == pad_id:
-                return t
-        raise KeyError(pad_id)
+        return self.seq.get_track(pad_id)
