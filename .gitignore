@@ -1,2 +1,5 @@
 venv
 host/engine/groovebox/__pycache__/
+host/engine/groovebox.egg-info/
+host/engine/groovebox_audio_cpp.cpython-312-x86_64-linux-gnu.so
+host/engine/build/

@@ -48,7 +48,7 @@ class Sequencer:
         self.current_step = 0
         self.total_steps = 0
         self.swing = 0.0  # 0.0 to 0.5
-        self.quantise_strength = 1.0 # 0.0 = raw, 1.0 = grid
+        self.quantise_strength = 0.0 # 0.0 = raw, 1.0 = grid
         self.last_tick_time = time.monotonic()
         self.undo_stack = []
         self.suppressed_steps = set() # (pad_id, step_idx) to skip playing once
@@ -128,7 +128,20 @@ class Sequencer:
             step = track.steps[step_idx]
             if step.state > 0:
                 velocity = 0.7 if step.state == 1 else 1.0
-                self.audio.play_sound(track.pad_id, velocity=velocity, reverb_send=step.reverb_send, delay_send=step.delay_send)
+                
+                # Calculate micro-timing delay
+                # step.offset is fraction of step duration (-0.5 to 0.5)
+                # We only support positive delay (late notes)
+                step_duration = self._step_duration_seconds()
+                delay_seconds = max(0.0, step.offset * step_duration)
+                
+                self.audio.play_sound(
+                    track.pad_id, 
+                    velocity=velocity, 
+                    reverb_send=step.reverb_send, 
+                    delay_send=step.delay_send,
+                    sample_offset=delay_seconds
+                )
 
     def handle_pad_press(self, pad_id: int):
         # live play
@@ -177,54 +190,7 @@ class Sequencer:
             step.state = 1
             step.offset = final_offset
 
-    def handle_pad_press(self, pad_id: int):
-        # live play
-        self.audio.play_sound(pad_id)
 
-        # record into pattern if in record mode
-        if self.recording and self.playing:
-            self.push_undo()
-            track = self._track_for_pad(pad_id)
-            if not track.steps:
-                return
-            
-            # Calculate which step we are closest to
-            now = time.monotonic()
-            step_duration = self._step_duration_seconds()
-            time_since_last_tick = now - self.last_tick_time
-            
-            # Current step index in the track
-            current_step_idx = self.total_steps % len(track.steps)
-            
-            # Determine if we are closer to the current step or the next one
-            # Note: last_tick_time is when current_step started
-            
-            offset = time_since_last_tick / step_duration # 0.0 to 1.0 (approx)
-            
-            target_step_idx = current_step_idx
-            recorded_offset = 0.0
-
-            if offset < 0.5:
-                # Closer to current step (late)
-                target_step_idx = current_step_idx
-                recorded_offset = offset
-            else:
-                # Closer to next step (early)
-                target_step_idx = (current_step_idx + 1) % len(track.steps)
-                recorded_offset = offset - 1.0
-            
-            # Apply quantise strength
-            # If strength is 1.0, offset becomes 0.0
-            # If strength is 0.0, offset stays as is
-            final_offset = recorded_offset * (1.0 - self.quantise_strength)
-
-            step = track.steps[target_step_idx]
-            step.state = 2 # Record as accent by default? Or cycle?
-            # If we are just tapping, maybe set to normal (1) or accent (2)
-            # Existing logic cycled. Let's just set to 1 (Normal) if 0, else cycle?
-            # But usually live recording just sets it to ON.
-            step.state = 1
-            step.offset = final_offset
 
     def clear_last_bar(self, pad_id: int):
         self.push_undo()

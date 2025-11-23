@@ -40,11 +40,17 @@ class AudioEngineSD:
                 samplerate=self.sample_rate,
                 blocksize=self.block_size,
                 channels=self.channels,
-                callback=self.audio_callback
+                callback=self.audio_callback,
+                latency='low'
             )
             self.stream.start()
         except Exception as e:
             print(f"Failed to initialize sounddevice: {e}")
+            
+        # Pre-allocate buffers for callback
+        self.mix_buffer = np.zeros((self.block_size, 2), dtype=np.float32)
+        self.reverb_in = np.zeros((self.block_size, 2), dtype=np.float32)
+        self.delay_in = np.zeros((self.block_size, 2), dtype=np.float32)
 
     def load_sample(self, pad_id, file_path, pad_name="Unknown"):
         try:
@@ -110,14 +116,16 @@ class AudioEngineSD:
             return (self.processed_samples[pad_id] * 32767).astype(np.int16)
         return None
 
-    def play_sound(self, pad_id: int, velocity: float = 1.0, reverb_send: float = 0.0, delay_send: float = 0.0):
+    def play_sound(self, pad_id: int, velocity: float = 1.0, reverb_send: float = 0.0, delay_send: float = 0.0, sample_offset: float = 0.0):
         if pad_id in self.processed_samples:
+            delay_frames = int(sample_offset * self.sample_rate)
             self.active_voices.append({
                 'sample': self.processed_samples[pad_id],
                 'pos': 0,
                 'velocity': velocity,
                 'reverb': reverb_send,
-                'delay': delay_send
+                'delay': delay_send,
+                'start_delay': delay_frames
             })
 
     def get_pad_state(self, pad_id):
@@ -169,18 +177,72 @@ class AudioEngineSD:
             print(f"Error cycling samples: {e}")
 
     def audio_callback(self, outdata, frames, time, status):
-        if status:
-            print(status)
+        # if status:
+        #     print(status)
         
         outdata.fill(0)
         
-        mix_buffer = np.zeros((frames, 2), dtype=np.float32)
-        reverb_in = np.zeros((frames, 2), dtype=np.float32)
-        delay_in = np.zeros((frames, 2), dtype=np.float32)
+        # Ensure buffers are large enough (if frames > block_size, which shouldn't happen with fixed blocksize)
+        if frames > len(self.mix_buffer):
+             self.mix_buffer = np.zeros((frames, 2), dtype=np.float32)
+             self.reverb_in = np.zeros((frames, 2), dtype=np.float32)
+             self.delay_in = np.zeros((frames, 2), dtype=np.float32)
+        
+        # Use views
+        mix_view = self.mix_buffer[:frames]
+        reverb_view = self.reverb_in[:frames]
+        delay_view = self.delay_in[:frames]
+        
+        mix_view.fill(0)
+        reverb_view.fill(0)
+        delay_view.fill(0)
         
         active_voices_next = []
         
         for voice in self.active_voices:
+            # Handle start delay
+            if voice.get('start_delay', 0) > 0:
+                if voice['start_delay'] >= frames:
+                    voice['start_delay'] -= frames
+                    active_voices_next.append(voice)
+                    continue
+                else:
+                    # Partial delay
+                    # We need to start mixing at offset
+                    # But for simplicity in this vectorized version, let's just skip the delay amount
+                    # and start mixing from the beginning of the block?
+                    # No, we need to mix into the buffer starting at 'start_delay'
+                    # This breaks the simple vectorization if we have multiple voices with different delays.
+                    # We can slice the destination buffer.
+                    
+                    start_offset = voice['start_delay']
+                    voice['start_delay'] = 0
+                    
+                    # Adjust destination views
+                    dest_mix = mix_view[start_offset:]
+                    dest_rev = reverb_view[start_offset:]
+                    dest_dly = delay_view[start_offset:]
+                    
+                    # Adjust count
+                    frames_to_mix = frames - start_offset
+                    
+                    sample = voice['sample']
+                    pos = voice['pos']
+                    remain = len(sample) - pos
+                    
+                    if remain > 0:
+                        count = min(frames_to_mix, remain)
+                        chunk = sample[pos:pos+count] * voice['velocity']
+                        
+                        dest_mix[:count] += chunk
+                        dest_rev[:count] += chunk * voice['reverb']
+                        dest_dly[:count] += chunk * voice['delay']
+                        
+                        voice['pos'] += count
+                        if voice['pos'] < len(sample):
+                            active_voices_next.append(voice)
+                    continue
+
             sample = voice['sample']
             pos = voice['pos']
             remain = len(sample) - pos
@@ -189,9 +251,9 @@ class AudioEngineSD:
                 count = min(frames, remain)
                 chunk = sample[pos:pos+count] * voice['velocity']
                 
-                mix_buffer[:count] += chunk
-                reverb_in[:count] += chunk * voice['reverb']
-                delay_in[:count] += chunk * voice['delay']
+                mix_view[:count] += chunk
+                reverb_view[:count] += chunk * voice['reverb']
+                delay_view[:count] += chunk * voice['delay']
                 
                 voice['pos'] += count
                 if voice['pos'] < len(sample):
@@ -199,33 +261,60 @@ class AudioEngineSD:
         
         self.active_voices = active_voices_next
         
-        # Process Delay
-        for i in range(frames):
-            # Read from delay line
-            read_idx = (self.delay_write_pos - self.delay_time_samples + self.delay_len) % self.delay_len
-            delayed_sig = self.delay_buffer[read_idx]
+        # Vectorized Delay Processing
+        # This is tricky with feedback, but for short blocks we can approximate or use Python loop
+        # Python loop is slow. Let's try to vectorize if possible, but feedback makes it recursive.
+        # However, if delay time >> block size, we can read from buffer and write to buffer in chunks.
+        
+        # Delay Read
+        # We need to read 'frames' samples from delay_buffer starting at read_pos
+        read_pos = (self.delay_write_pos - self.delay_time_samples + self.delay_len) % self.delay_len
+        
+        # Handle wrap-around for reading
+        if read_pos + frames <= self.delay_len:
+            delayed_sig = self.delay_buffer[read_pos:read_pos+frames]
+        else:
+            part1 = self.delay_buffer[read_pos:]
+            part2 = self.delay_buffer[:frames - len(part1)]
+            delayed_sig = np.concatenate((part1, part2))
             
-            # Write to delay line (input + feedback)
-            input_sig = delay_in[i] + delayed_sig * self.delay_feedback
-            self.delay_buffer[self.delay_write_pos] = input_sig
+        # Delay Write (Input + Feedback)
+        input_sig = delay_view + delayed_sig * self.delay_feedback
+        
+        # Handle wrap-around for writing
+        if self.delay_write_pos + frames <= self.delay_len:
+            self.delay_buffer[self.delay_write_pos:self.delay_write_pos+frames] = input_sig
+        else:
+            part1_len = self.delay_len - self.delay_write_pos
+            self.delay_buffer[self.delay_write_pos:] = input_sig[:part1_len]
+            self.delay_buffer[:frames - part1_len] = input_sig[part1_len:]
             
-            # Add to mix
-            mix_buffer[i] += delayed_sig
-            
-            self.delay_write_pos = (self.delay_write_pos + 1) % self.delay_len
+        self.delay_write_pos = (self.delay_write_pos + frames) % self.delay_len
+        
+        mix_view += delayed_sig
 
-        # Process Reverb (Simple long delay with high feedback for now)
-        # A real reverb needs allpass filters etc.
-        for i in range(frames):
-            read_idx = (self.reverb_write_pos - int(self.sample_rate * 0.1) + self.reverb_len) % self.reverb_len
-            # Just a simple echo for now to demonstrate the bus
-            reverb_sig = self.reverb_buffer[read_idx]
+        # Vectorized Reverb Processing
+        # Same logic as delay
+        rev_read_pos = (self.reverb_write_pos - int(self.sample_rate * 0.1) + self.reverb_len) % self.reverb_len
+        
+        if rev_read_pos + frames <= self.reverb_len:
+            reverb_sig = self.reverb_buffer[rev_read_pos:rev_read_pos+frames]
+        else:
+            part1 = self.reverb_buffer[rev_read_pos:]
+            part2 = self.reverb_buffer[:frames - len(part1)]
+            reverb_sig = np.concatenate((part1, part2))
             
-            input_sig = reverb_in[i] + reverb_sig * self.reverb_feedback
-            self.reverb_buffer[self.reverb_write_pos] = input_sig
+        rev_input_sig = reverb_view + reverb_sig * self.reverb_feedback
+        
+        if self.reverb_write_pos + frames <= self.reverb_len:
+            self.reverb_buffer[self.reverb_write_pos:self.reverb_write_pos+frames] = rev_input_sig
+        else:
+            part1_len = self.reverb_len - self.reverb_write_pos
+            self.reverb_buffer[self.reverb_write_pos:] = rev_input_sig[:part1_len]
+            self.reverb_buffer[:frames - part1_len] = rev_input_sig[part1_len:]
             
-            mix_buffer[i] += reverb_sig * 0.5
-            
-            self.reverb_write_pos = (self.reverb_write_pos + 1) % self.reverb_len
+        self.reverb_write_pos = (self.reverb_write_pos + frames) % self.reverb_len
+        
+        mix_view += reverb_sig * 0.5
 
-        outdata[:] = mix_buffer
+        outdata[:] = mix_view

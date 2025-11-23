@@ -1,39 +1,55 @@
-import pygame.mixer
-import pygame.sndarray
+import soundfile as sf
 import numpy as np
 import os
-from config import GrooveboxConfig, PadConfig
+from config import GrooveboxConfig
+try:
+    import groovebox_audio_cpp
+except ImportError:
+    groovebox_audio_cpp = None
 
-class AudioEngine:
+AVAILABLE = groovebox_audio_cpp is not None
+
+class AudioEngineCpp:
     def __init__(self, config: GrooveboxConfig):
-        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
-        self.sounds = {}
-        self.raw_data = {}
+        if not AVAILABLE:
+            raise ImportError("C++ Audio Engine extension not found")
+            
+        self.engine = groovebox_audio_cpp.CppAudioEngine(44100)
         self.pad_states = {}
         self.pad_paths = {}
+        self.raw_samples = {} # Keep raw numpy data for UI waveform
+        self.processed_samples = {} # Keep processed for UI
         
         for pad in config.pads:
             self.load_sample(pad.id, pad.sample, pad.name)
+            
+        self.engine.start()
 
     def load_sample(self, pad_id, file_path, pad_name="Unknown"):
         try:
-            sound = pygame.mixer.Sound(file_path)
-            self.sounds[pad_id] = sound
-            self.raw_data[pad_id] = pygame.sndarray.array(sound)
+            data, fs = sf.read(file_path, always_2d=True, dtype='float32')
+            # Store raw for UI
+            self.raw_samples[pad_id] = data
             self.pad_states[pad_id] = { 'trim_start': 0.0, 'trim_end': 1.0, 'reverse': False, 'normalized': False }
             self.pad_paths[pad_id] = file_path
-        except (FileNotFoundError, pygame.error) as e:
+            
+            # Send to C++
+            # We need to process it first based on state? 
+            # The C++ engine I wrote takes the buffer and plays it.
+            # It doesn't implement trim/reverse/normalize internally yet.
+            # So I should process it in Python and send the processed buffer to C++.
+            self.update_sound(pad_id)
+            
+        except Exception as e:
             print(f"Warning: Could not load sample for pad '{pad_name}' ({file_path}): {e}")
-            pass
 
     def update_sound(self, pad_id):
-        if pad_id not in self.raw_data:
+        if pad_id not in self.raw_samples:
             return
             
-        data = self.raw_data[pad_id]
+        data = self.raw_samples[pad_id]
         state = self.pad_states[pad_id]
         
-        # Trim
         start_idx = int(len(data) * state['trim_start'])
         end_idx = int(len(data) * state['trim_end'])
         
@@ -43,19 +59,20 @@ class AudioEngine:
             
         sliced = data[start_idx:end_idx]
         
-        # Reverse
         if state['reverse']:
             sliced = sliced[::-1]
             
-        # Normalize
         if state['normalized']:
             max_val = np.max(np.abs(sliced))
             if max_val > 0:
-                float_data = sliced.astype(np.float32)
-                float_data = float_data * (32767.0 / max_val)
-                sliced = float_data.astype(np.int16)
+                sliced = sliced / max_val * 0.95
         
-        self.sounds[pad_id] = pygame.sndarray.make_sound(np.ascontiguousarray(sliced))
+        # Ensure contiguous C-order float32
+        processed = np.ascontiguousarray(sliced, dtype=np.float32)
+        self.processed_samples[pad_id] = processed
+        
+        # Send to C++
+        self.engine.load_sample(pad_id, processed)
 
     def set_trim(self, pad_id, start, end):
         if pad_id in self.pad_states:
@@ -74,21 +91,12 @@ class AudioEngine:
             self.update_sound(pad_id)
 
     def get_waveform(self, pad_id):
-        if pad_id in self.sounds:
-            return pygame.sndarray.array(self.sounds[pad_id])
+        if pad_id in self.processed_samples:
+            return (self.processed_samples[pad_id] * 32767).astype(np.int16)
         return None
 
     def play_sound(self, pad_id: int, velocity: float = 1.0, reverb_send: float = 0.0, delay_send: float = 0.0, sample_offset: float = 0.0):
-        if pad_id not in self.sounds:
-            return
-        
-        # Pygame backend doesn't support sample-accurate offset easily without blocking
-        # Just ignore offset for now
-        
-        volume = max(0.0, min(1.0, velocity))  # clamp between 0.0 and 1.0
-        sound = self.sounds[pad_id]
-        sound.set_volume(volume)
-        sound.play()
+        self.engine.play_sound(pad_id, velocity, reverb_send, delay_send, sample_offset)
 
     def get_pad_state(self, pad_id):
         return self.pad_states.get(pad_id, None)

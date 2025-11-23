@@ -9,8 +9,17 @@ try:
 
     import sounddevice
     import soundfile
-    from audio_sd import AudioEngineSD as AudioEngine
-    print("Using SoundDevice Audio Backend")
+    
+    # Try C++ backend first
+    try:
+        from audio_cpp import AudioEngineCpp as AudioEngine, AVAILABLE as CPP_AVAILABLE
+        if not CPP_AVAILABLE:
+            raise ImportError("C++ Extension not compiled")
+        print("Using C++ Audio Backend")
+    except ImportError:
+        from audio_sd import AudioEngineSD as AudioEngine
+        print("Using SoundDevice Audio Backend")
+        
 except (ImportError, OSError) as e:
     print(f"Using Pygame Audio Backend ({e})")
     from audio_pygame import AudioEngine as AudioEngine

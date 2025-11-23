@@ -11,19 +11,42 @@ class GrooveboxUI:
     def __init__(self, config: GrooveboxConfig):
         pygame.init()
         pygame.display.set_caption("GrooveBox Engine")
-        self.screen = pygame.display.set_mode((1024, 768))
+        self.screen = pygame.display.set_mode((1280, 800))
         self.config = config
         self.audio = AudioEngine(config)
         self.pattern_a = make_empty_pattern(config)
         self.pattern_b = make_empty_pattern(config)
         self.pattern_fill = make_empty_pattern(config)
         self.seq = Sequencer(self.pattern_a, self.pattern_b, self.pattern_fill, self.audio)
-        self.font = pygame.font.SysFont("Arial", 18)
-        self.help_font = pygame.font.SysFont("Arial", 14)
+        
+        # Fonts
+        self.font_large = pygame.font.SysFont("Arial", 24, bold=True)
+        self.font = pygame.font.SysFont("Arial", 16)
+        self.font_small = pygame.font.SysFont("Arial", 12)
+        
         self.key_to_pad = {pad.key: pad.id for pad in config.pads}
         self.selected_pad_id = None
         self.selected_step_idx = None
         self.show_help = False
+        
+        # Colors
+        self.colors = {
+            'bg': (18, 18, 24),
+            'panel': (30, 30, 40),
+            'panel_border': (50, 50, 60),
+            'text': (220, 220, 230),
+            'text_dim': (120, 120, 140),
+            'accent': (255, 160, 60),
+            'pad_off': (40, 40, 50),
+            'pad_on': (60, 60, 80),
+            'pad_active': (255, 200, 100),
+            'step_off': (25, 25, 35),
+            'step_on': (80, 120, 200),
+            'step_accent': (120, 180, 255),
+            'step_cursor': (255, 255, 255),
+            'mute': (200, 60, 60),
+            'solo': (220, 200, 60)
+        }
 
     def run(self):
         clock = pygame.time.Clock()
@@ -44,105 +67,389 @@ class GrooveboxUI:
             clock.tick(60)
         pygame.quit()
 
-    def handle_mouse_click(self, pos, button):
-        x, y = pos
-        padding = 20
-        waveform_height = 80
-        pad_start_y = padding + waveform_height + padding
-        pad_area_height = 180
-        pad_rows = 2
-        pad_cols = 4
-        pad_area_width = self.screen.get_width() - 2 * padding
-        pad_width = (pad_area_width - (pad_cols + 1) * padding) // pad_cols
-        pad_height = (pad_area_height - (pad_rows + 1) * padding) // pad_rows
-
-        # Check Pads
-        if pad_start_y <= y <= pad_start_y + pad_area_height:
-            # Calculate col/row
-            # x = padding + col * (pad_width + padding)
-            # col = (x - padding) / (pad_width + padding)
-            col = (x - padding) // (pad_width + padding)
-            row = (y - pad_start_y) // (pad_height + padding)
-            
-            if 0 <= col < pad_cols and 0 <= row < pad_rows:
-                # Check if inside the rect (ignoring padding gap)
-                rect_x = padding + col * (pad_width + padding)
-                rect_y = pad_start_y + row * (pad_height + padding)
-                if rect_x <= x <= rect_x + pad_width and rect_y <= y <= rect_y + pad_height:
-                    idx = row * pad_cols + col
-                    if idx < len(self.config.pads):
-                        pad_id = self.config.pads[idx].id
-                        
-                        if button == 1: # Left click
-                            # Select track
-                            self.selected_pad_id = pad_id
-                            # Trigger sound
-                            self.seq.handle_pad_press(pad_id)
-                        elif button == 3: # Right click
-                            # Maybe mute/solo context menu? Or just toggle mute?
-                            # Request says "click on tracks to mute/solo"
-                            # Let's toggle mute on right click
-                            track = self._track_for_pad(pad_id)
-                            track.mute = not track.mute
-
-        # Check Grid
-        grid_y_start = pad_start_y + pad_area_height + padding
-        grid_height = 180
+    def draw(self):
+        self.screen.fill(self.colors['bg'])
         
-        if grid_y_start <= y <= grid_y_start + grid_height:
-            current_pattern = self.seq.pattern
-            max_steps = current_pattern.beats_per_bar
-            for track in current_pattern.tracks:
-                max_steps = max(max_steps, len(track.steps))
+        w, h = self.screen.get_size()
+        header_h = 60
+        bottom_h = 180
+        left_w = 400
+        
+        # Header
+        self._draw_header(0, 0, w, header_h)
+        
+        # Pads
+        self._draw_pads(20, header_h + 20, left_w - 40, h - header_h - bottom_h - 40)
+        
+        # Sequencer
+        self._draw_sequencer(left_w, header_h + 20, w - left_w - 20, h - header_h - bottom_h - 40)
+        
+        # Bottom Panel (Waveform or Step Edit)
+        self._draw_bottom_panel(20, h - bottom_h, w - 40, bottom_h - 20)
+        
+        if self.show_help:
+            self._draw_help()
             
-            num_tracks = len(current_pattern.tracks)
-            row_gap = 4
-            label_width = 120
-            grid_width = pad_area_width - label_width - 10
-            row_height = (grid_height - row_gap * (num_tracks + 1)) // num_tracks
-            step_gap = 2
-            step_width = (grid_width - step_gap * (max_steps + 1)) // max_steps
+        pygame.display.flip()
 
-            # Check which track row
-            # y = grid_y_start + row_gap + track_idx * (row_height + row_gap)
-            # track_idx = (y - grid_y_start - row_gap) / (row_height + row_gap)
-            track_idx = (y - grid_y_start - row_gap) // (row_height + row_gap)
+    def _draw_header(self, x, y, w, h):
+        pygame.draw.rect(self.screen, self.colors['panel'], (x, y, w, h))
+        pygame.draw.line(self.screen, self.colors['panel_border'], (x, y+h), (x+w, y+h))
+        
+        # Title
+        title = self.font_large.render("GROOVEBOX", True, self.colors['accent'])
+        self.screen.blit(title, (x + 20, y + 15))
+        
+        # Transport Info
+        info_x = x + 200
+        
+        # BPM
+        bpm_surf = self.font.render(f"BPM: {int(self.seq.pattern.bpm)}", True, self.colors['text'])
+        self.screen.blit(bpm_surf, (info_x, y + 20))
+        
+        # Swing
+        swing_surf = self.font.render(f"SWING: {int(self.seq.swing * 100)}%", True, self.colors['text'])
+        self.screen.blit(swing_surf, (info_x + 100, y + 20))
+        
+        # Quantize
+        q_val = "RAW" if self.seq.quantise_strength == 0 else f"{int(self.seq.quantise_strength*100)}%"
+        quant_surf = self.font.render(f"QUANT: {q_val}", True, self.colors['text'])
+        self.screen.blit(quant_surf, (info_x + 220, y + 20))
+        
+        # Status
+        status_text = "PLAYING" if self.seq.playing else "STOPPED"
+        status_color = (100, 255, 100) if self.seq.playing else (255, 100, 100)
+        if self.seq.recording:
+            status_text += " [REC]"
+            status_color = (255, 50, 50)
+            
+        status_surf = self.font_large.render(status_text, True, status_color)
+        status_rect = status_surf.get_rect(right=w - 20, centery=y + h//2)
+        self.screen.blit(status_surf, status_rect)
+        
+        # Help Hint
+        hint = self.font_small.render("Press 'H' for Help", True, self.colors['text_dim'])
+        self.screen.blit(hint, (w - 120, y + 40))
+
+    def _draw_pads(self, x, y, w, h):
+        # 2x4 Grid
+        rows = 2
+        cols = 4
+        gap = 10
+        
+        pad_w = (w - (cols-1)*gap) // cols
+        pad_h = (h - (rows-1)*gap) // rows
+        
+        for i, pad_cfg in enumerate(self.config.pads):
+            r = i // cols
+            c = i % cols
+            
+            px = x + c * (pad_w + gap)
+            py = y + r * (pad_h + gap)
+            
+            rect = pygame.Rect(px, py, pad_w, pad_h)
+            
+            # Color logic
+            color = self.colors['pad_off']
+            border = self.colors['panel_border']
+            
+            track = self._track_for_pad(pad_cfg.id)
+            
+            # Check if playing
+            step_idx = self.seq.total_steps % len(track.steps) if track.steps else 0
+            is_playing = self.seq.playing and track.steps and track.steps[step_idx].state > 0
+            
+            if pad_cfg.id == self.selected_pad_id:
+                color = self.colors['pad_on']
+                border = self.colors['accent']
+            
+            if is_playing:
+                color = self.colors['pad_active']
+                
+            # Draw Pad
+            pygame.draw.rect(self.screen, color, rect, border_radius=6)
+            pygame.draw.rect(self.screen, border, rect, 2, border_radius=6)
+            
+            # Text
+            name = self.font.render(pad_cfg.name, True, self.colors['text'])
+            key = self.font_small.render(f"[{pad_cfg.key.upper()}]", True, self.colors['text_dim'])
+            
+            name_rect = name.get_rect(center=(rect.centerx, rect.centery - 8))
+            key_rect = key.get_rect(center=(rect.centerx, rect.centery + 12))
+            
+            self.screen.blit(name, name_rect)
+            self.screen.blit(key, key_rect)
+            
+            # Mute/Solo indicators
+            if track.mute:
+                m_surf = self.font_small.render("M", True, self.colors['mute'])
+                self.screen.blit(m_surf, (rect.right - 15, rect.top + 5))
+            if track.solo:
+                s_surf = self.font_small.render("S", True, self.colors['solo'])
+                self.screen.blit(s_surf, (rect.right - 25, rect.top + 5))
+
+    def _draw_sequencer(self, x, y, w, h):
+        tracks = self.seq.pattern.tracks
+        num_tracks = len(tracks)
+        if num_tracks == 0: return
+        
+        row_h = h // num_tracks
+        gap = 2
+        grid_w = w
+        
+        for i, track in enumerate(tracks):
+            row_y = y + i * row_h
+            
+            # Draw row background
+            bg_rect = pygame.Rect(x, row_y, grid_w, row_h - gap)
+            pygame.draw.rect(self.screen, self.colors['panel'], bg_rect, border_radius=4)
+            
+            # Highlight if selected
+            if track.pad_id == self.selected_pad_id:
+                pygame.draw.rect(self.screen, self.colors['panel_border'], bg_rect, 1, border_radius=4)
+            
+            # Steps
+            steps = track.steps
+            num_steps = len(steps)
+            step_w = (grid_w - 10) / num_steps
+            
+            for s_i, step in enumerate(steps):
+                sx = x + 5 + s_i * step_w
+                sy = row_y + 4
+                sw = step_w - 2
+                sh = row_h - gap - 8
+                
+                s_rect = pygame.Rect(sx, sy, sw, sh)
+                
+                color = self.colors['step_off']
+                if step.state == 1: color = self.colors['step_on']
+                elif step.state == 2: color = self.colors['step_accent']
+                
+                # Cursor
+                if self.seq.playing and (self.seq.total_steps % num_steps) == s_i:
+                    pygame.draw.rect(self.screen, self.colors['step_cursor'], s_rect.inflate(2,2), 2, border_radius=2)
+                    if step.state > 0:
+                        color = tuple(min(255, c + 50) for c in color)
+                
+                # Selection
+                if track.pad_id == self.selected_pad_id and s_i == self.selected_step_idx:
+                    pygame.draw.rect(self.screen, self.colors['accent'], s_rect.inflate(4,4), 2, border_radius=2)
+
+                pygame.draw.rect(self.screen, color, s_rect, border_radius=2)
+                
+                # Micro-timing indicator
+                if step.state > 0 and abs(step.offset) > 0.01:
+                    off_x = sx + sw/2 + (step.offset * sw)
+                    pygame.draw.line(self.screen, (255,0,0), (off_x, sy+sh-2), (off_x, sy+sh), 2)
+
+    def _draw_bottom_panel(self, x, y, w, h):
+        pygame.draw.rect(self.screen, self.colors['panel'], (x, y, w, h), border_radius=8)
+        pygame.draw.rect(self.screen, self.colors['panel_border'], (x, y, w, h), 2, border_radius=8)
+        
+        if self.selected_pad_id is None:
+            title = self.font.render("SELECT A PAD TO EDIT", True, self.colors['text_dim'])
+            self.screen.blit(title, (x + 20, y + h//2 - 10))
+            return
+
+        if self.selected_step_idx is not None:
+            self._draw_step_edit(x, y, w, h)
+        else:
+            self._draw_waveform(x, y, w, h)
+
+    def _draw_step_edit(self, x, y, w, h):
+        track = self._track_for_pad(self.selected_pad_id)
+        if self.selected_step_idx >= len(track.steps): return
+        step = track.steps[self.selected_step_idx]
+        
+        title = self.font.render(f"STEP EDIT: {self.selected_step_idx + 1}", True, self.colors['accent'])
+        self.screen.blit(title, (x + 20, y + 15))
+        
+        def draw_slider(label, value, sx, sy, sw):
+            lbl = self.font_small.render(label, True, self.colors['text'])
+            self.screen.blit(lbl, (sx, sy))
+            
+            bar_rect = pygame.Rect(sx, sy + 20, sw, 6)
+            pygame.draw.rect(self.screen, (50,50,50), bar_rect, border_radius=3)
+            
+            fill_w = sw * value
+            fill_rect = pygame.Rect(sx, sy + 20, fill_w, 6)
+            pygame.draw.rect(self.screen, self.colors['accent'], fill_rect, border_radius=3)
+            
+            val_txt = self.font_small.render(f"{int(value*100)}%", True, self.colors['text_dim'])
+            self.screen.blit(val_txt, (sx + sw + 10, sy + 15))
+
+        draw_slider("REVERB SEND", step.reverb_send, x + 20, y + 50, 200)
+        draw_slider("DELAY SEND", step.delay_send, x + 20, y + 100, 200)
+        
+        off_norm = step.offset + 0.5
+        draw_slider("OFFSET", off_norm, x + 300, y + 50, 200)
+
+    def _draw_waveform(self, x, y, w, h):
+        data = self.audio.get_waveform(self.selected_pad_id)
+        if data is None: return
+            
+        # Downsample
+        if len(data.shape) > 1:
+            samples = np.mean(data, axis=1)
+        else:
+            samples = data
+            
+        if len(samples) == 0: return
+            
+        step = max(1, len(samples) // (w - 40))
+        view = samples[::step]
+        
+        max_amp = 32768.0 # Expecting int16 audio data
+        center_y = y + h // 2
+        scale = (h / 2.5) / max_amp
+        
+        points = []
+        for i, samp in enumerate(view):
+            if i >= w - 40: break
+            px = x + 20 + i
+            py = center_y - samp * scale
+            points.append((px, py))
+            
+        if len(points) > 1:
+            pygame.draw.lines(self.screen, (100, 200, 100), False, points)
+            
+        # Draw trim markers
+        state = self.audio.get_pad_state(self.selected_pad_id)
+        if state:
+            start_x = x + 20 + int(state['trim_start'] * (w - 40))
+            end_x = x + 20 + int(state['trim_end'] * (w - 40))
+            
+            pygame.draw.line(self.screen, (255, 255, 0), (start_x, y+10), (start_x, y + h-10), 2)
+            pygame.draw.line(self.screen, (255, 0, 0), (end_x, y+10), (end_x, y + h-10), 2)
+            
+            status_text = []
+            if state['reverse']: status_text.append("REV")
+            if state['normalized']: status_text.append("NORM")
+            
+            if status_text:
+                text = " ".join(status_text)
+                surf = self.font.render(text, True, (255, 100, 100))
+                self.screen.blit(surf, (x + 20, y + 10))
+
+    def _draw_help(self):
+        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 220))
+        self.screen.blit(overlay, (0, 0))
+        
+        help_text = [
+            "CONTROLS",
+            "----------------",
+            "SPACE: Play/Pause | R: Record | TAB: Switch Pattern (A/B) | F: Fill (Hold)",
+            "UP/DOWN: BPM | LEFT/RIGHT: Swing | Q/W: Quantise",
+            "1-6: Trigger Pad / Select Track",
+            "",
+            "TRACK EDITING (Selected Track)",
+            "----------------",
+            "[: Decrease Length | ]: Increase Length",
+            "Shift + [/]: Rotate Pattern",
+            "M: Mute | S: Solo | DEL: Clear Last Bar",
+            "X: Randomize | E: Euclidean Fill (+Shift to reduce)",
+            "P: Probability (+Shift to increase)",
+            "",
+            "SAMPLE EDITING",
+            "----------------",
+            "PgUp/PgDn: Cycle Sample",
+            "V: Reverse | N: Normalize",
+            "Shift + Left/Right: Trim Start",
+            "Ctrl + Left/Right: Trim End",
+            "",
+            "SESSION",
+            "----------------",
+            "Ctrl+S: Save | Ctrl+O: Load | Ctrl+Z: Undo",
+            "H / ?: Toggle Help"
+        ]
+        
+        y = 100
+        for line in help_text:
+            color = self.colors['text']
+            if line.startswith("---") or line == "":
+                y += 10
+                continue
+            if line.isupper() and not line.startswith("CTRL"):
+                color = self.colors['accent']
+                y += 10
+            
+            surf = self.font.render(line, True, color)
+            rect = surf.get_rect(center=(self.screen.get_width() // 2, y))
+            self.screen.blit(surf, rect)
+            y += 30
+
+    def handle_mouse_click(self, pos, button):
+        mx, my = pos
+        w, h = self.screen.get_size()
+        header_h = 60
+        bottom_h = 180
+        left_w = 400
+        
+        # Pads
+        pad_rect = pygame.Rect(20, header_h + 20, left_w - 40, h - header_h - bottom_h - 40)
+        if pad_rect.collidepoint(mx, my):
+            rel_x = mx - pad_rect.x
+            rel_y = my - pad_rect.y
+            
+            cols = 4
+            rows = 2
+            gap = 10
+            pad_w = (pad_rect.w - (cols-1)*gap) // cols
+            pad_h = (pad_rect.h - (rows-1)*gap) // rows
+            
+            c = rel_x // (pad_w + gap)
+            r = rel_y // (pad_h + gap)
+            
+            if 0 <= c < cols and 0 <= r < rows:
+                idx = r * cols + c
+                if idx < len(self.config.pads):
+                    pad_id = self.config.pads[idx].id
+                    if button == 1:
+                        self.selected_pad_id = pad_id
+                        self.seq.handle_pad_press(pad_id)
+                    elif button == 3:
+                        track = self._track_for_pad(pad_id)
+                        track.mute = not track.mute
+            return
+
+        # Sequencer
+        seq_rect = pygame.Rect(left_w, header_h + 20, w - left_w - 20, h - header_h - bottom_h - 40)
+        if seq_rect.collidepoint(mx, my):
+            tracks = self.seq.pattern.tracks
+            num_tracks = len(tracks)
+            if num_tracks == 0: return
+            
+            row_h = seq_rect.h // num_tracks
+            rel_y = my - seq_rect.y
+            track_idx = rel_y // row_h
             
             if 0 <= track_idx < num_tracks:
-                track = current_pattern.tracks[track_idx]
+                track = tracks[track_idx]
                 
-                # Check if clicked on label (Mute/Solo toggle?)
-                if x < padding + label_width:
-                    # Clicked on label
-                    if button == 1: # Left click
-                        # Select track
-                        self.selected_pad_id = track.pad_id
-                    elif button == 3: # Right click
-                        # Toggle Mute
-                        track.mute = not track.mute
-                else:
-                    # Check which step
-                    # x = padding + label_width + step_gap + step_idx * (step_width + step_gap)
-                    step_idx = (x - (padding + label_width + step_gap)) // (step_width + step_gap)
+                # Step
+                steps = track.steps
+                num_steps = len(steps)
+                step_w = (seq_rect.w - 10) / num_steps
+                
+                rel_x = mx - (seq_rect.x + 5)
+                step_idx = int(rel_x // step_w)
+                
+                if 0 <= step_idx < num_steps:
+                    step = steps[step_idx]
+                    mods = pygame.key.get_mods()
+                    shift = mods & pygame.KMOD_SHIFT
                     
-                    if 0 <= step_idx < len(track.steps):
-                        step = track.steps[step_idx]
-                        mods = pygame.key.get_mods()
-                        shift = mods & pygame.KMOD_SHIFT
-                        
-                        if shift:
-                            # Select step for editing
-                            self.selected_pad_id = track.pad_id
-                            self.selected_step_idx = step_idx
-                        else:
-                            if button == 1: # Left click
-                                # Toggle state
-                                step.state = (step.state + 1) % 3
-                            elif button == 3: # Right click
-                                # Clear step
-                                step.state = 0
-                            # Deselect step if we toggle
-                            self.selected_step_idx = None
+                    if shift:
+                        self.selected_pad_id = track.pad_id
+                        self.selected_step_idx = step_idx
+                    else:
+                        if button == 1:
+                            step.state = (step.state + 1) % 3
+                        elif button == 3:
+                            step.state = 0
+                        self.selected_step_idx = None
+            return
 
     def handle_keydown(self, key):
         mods = pygame.key.get_mods()
@@ -151,27 +458,21 @@ class GrooveboxUI:
 
         if key == pygame.K_ESCAPE:
             self.selected_step_idx = None
+            self.show_help = False
             return
 
         if self.selected_step_idx is not None and self.selected_pad_id is not None:
-            # Step editing mode
             track = self._track_for_pad(self.selected_pad_id)
             if self.selected_step_idx < len(track.steps):
                 step = track.steps[self.selected_step_idx]
                 
                 if key == pygame.K_LEFTBRACKET:
-                    if shift:
-                        step.delay_send = max(0.0, step.delay_send - 0.1)
-                    else:
-                        step.reverb_send = max(0.0, step.reverb_send - 0.1)
+                    if shift: step.delay_send = max(0.0, step.delay_send - 0.1)
+                    else: step.reverb_send = max(0.0, step.reverb_send - 0.1)
+                    return
                 elif key == pygame.K_RIGHTBRACKET:
-                    if shift:
-                        step.delay_send = min(1.0, step.delay_send + 0.1)
-                    else:
-                        step.reverb_send = min(1.0, step.reverb_send + 0.1)
-                # Allow other keys to pass through?
-                # Maybe return if we handled it
-                if key in [pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET]:
+                    if shift: step.delay_send = min(1.0, step.delay_send + 0.1)
+                    else: step.reverb_send = min(1.0, step.reverb_send + 0.1)
                     return
 
         if key == pygame.K_SPACE:
@@ -252,13 +553,9 @@ class GrooveboxUI:
                 track = self._track_for_pad(self.selected_pad_id)
                 track.mute = not track.mute
         elif key == pygame.K_s:
-            if ctrl:
-                self.save_session()
-            elif self.selected_pad_id is not None:
+            if self.selected_pad_id is not None:
                 track = self._track_for_pad(self.selected_pad_id)
                 track.solo = not track.solo
-        elif key == pygame.K_o and ctrl:
-            self.load_session()
         elif key == pygame.K_x:
             if self.selected_pad_id is not None:
                 self.seq.randomize_track(self.selected_pad_id)
@@ -268,10 +565,6 @@ class GrooveboxUI:
         elif key == pygame.K_v:
             if self.selected_pad_id is not None:
                 self.audio.toggle_reverse(self.selected_pad_id)
-        elif key == pygame.K_l:  # Load session
-            self.load_session()
-        elif key == pygame.K_s:  # Save session
-            self.save_session()
         elif key == pygame.K_PAGEUP:
             if self.selected_pad_id is not None:
                 self.audio.cycle_sample(self.selected_pad_id, -1)
@@ -295,351 +588,9 @@ class GrooveboxUI:
     def _pad_from_key(self, key):
         char = pygame.key.name(key)
         return self.key_to_pad.get(char)
-    
-    def draw(self):
-        """Draw pads + per-instrument step grid + status."""
-        self.screen.fill((20, 20, 30))  # Darker background
-
-        padding = 20
-        
-        # Waveform area
-        waveform_height = 80
-        if self.selected_pad_id is not None:
-            self._draw_waveform(padding, padding, self.screen.get_width() - 2*padding, waveform_height)
-        else:
-            # Draw a placeholder or title if no pad selected
-            title_surf = self.font.render("GROOVEBOX ENGINE", True, (60, 60, 80))
-            self.screen.blit(title_surf, (padding, padding))
-        
-        pad_rows = 2
-        pad_cols = 4
-
-        # Top half: the big pads you hit
-        pad_area_width = self.screen.get_width() - 2 * padding
-        pad_area_height = 180
-
-        pad_width = (pad_area_width - (pad_cols + 1) * padding) // pad_cols
-        pad_height = (pad_area_height - (pad_rows + 1) * padding) // pad_rows
-        
-        pad_start_y = padding + waveform_height + padding
-
-        # Draw pad grid
-        for i, pad_cfg in enumerate(self.config.pads):
-            row = i // pad_cols
-            col = i % pad_cols
-
-            x = padding + col * (pad_width + padding)
-            y = pad_start_y + row * (pad_height + padding)
-
-            rect = pygame.Rect(x, y, pad_width, pad_height)
-
-            track = self._track_for_pad(pad_cfg.id)
-
-            has_any_steps = any(step.state > 0 for step in track.steps)
-            
-            # Use total_steps for polyrhythmic lookup
-            if track.steps:
-                step_idx = self.seq.total_steps % len(track.steps)
-                step_active_now = track.steps[step_idx].state > 0
-            else:
-                step_active_now = False
-
-            base_colour = (40, 40, 50)
-            border_color = (60, 60, 80)
-            
-            if has_any_steps:
-                base_colour = (50, 50, 80)        # has something programmed
-            
-            if pad_cfg.id == self.selected_pad_id:
-                border_color = (255, 200, 100)
-                base_colour = (70, 70, 100)
-
-            if step_active_now and self.seq.playing:
-                base_colour = (140, 100, 160)       # this step currently firing
-                border_color = (200, 150, 220)
-
-            pygame.draw.rect(self.screen, base_colour, rect, border_radius=8)
-            pygame.draw.rect(self.screen, border_color, rect, 2, border_radius=8)
-
-            name_surface = self.font.render(pad_cfg.name, True, (220, 220, 230))
-            key_surface = self.font.render(f"[{pad_cfg.key.upper()}]", True, (150, 150, 170))
-
-            name_pos = name_surface.get_rect(center=(rect.centerx, rect.centery - 10))
-            key_pos = key_surface.get_rect(center=(rect.centerx, rect.centery + 15))
-
-            self.screen.blit(name_surface, name_pos)
-            self.screen.blit(key_surface, key_pos)
-
-        # Middle: per-instrument beat grid
-        grid_y_start = pad_start_y + pad_area_height + padding
-        grid_height = 180
-        self._draw_step_grid(
-            x_start=padding,
-            y_start=grid_y_start,
-            width=pad_area_width,
-            height=grid_height,
-        )
-
-        # Bottom: status line (BPM, mode etc)
-        self._draw_status_line()
-
-        if self.show_help:
-            self._draw_help()
-
-        pygame.display.flip()
-
-    def _draw_help(self):
-        overlay = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
-        overlay.fill((0, 0, 0, 200))
-        self.screen.blit(overlay, (0, 0))
-        
-        help_text = [
-            "CONTROLS",
-            "----------------",
-            "SPACE: Play/Pause | R: Record | TAB: Switch Pattern (A/B) | F: Fill (Hold)",
-            "UP/DOWN: BPM | LEFT/RIGHT: Swing | Q/W: Quantise",
-            "1-6: Trigger Pad / Select Track",
-            "",
-            "TRACK EDITING (Selected Track)",
-            "----------------",
-            "[: Decrease Length | ]: Increase Length",
-            "Shift + [/]: Rotate Pattern",
-            "M: Mute | S: Solo | DEL: Clear Last Bar",
-            "X: Randomize | E: Euclidean Fill (+Shift to reduce)",
-            "P: Probability (+Shift to increase)",
-            "",
-            "SAMPLE EDITING",
-            "----------------",
-            "PgUp/PgDn: Cycle Sample",
-            "V: Reverse | N: Normalize",
-            "Shift + Left/Right: Trim Start",
-            "Ctrl + Left/Right: Trim End",
-            "",
-            "SESSION",
-            "----------------",
-            "Ctrl+S: Save | Ctrl+O: Load | Ctrl+Z: Undo",
-            "H / ?: Toggle Help"
-        ]
-        
-        y = 50
-        for line in help_text:
-            color = (255, 255, 255)
-            if line.startswith("---") or line == "":
-                y += 10
-                continue
-            if line.isupper() and not line.startswith("CTRL"):
-                color = (255, 200, 100)
-                y += 10
-            
-            surf = self.font.render(line, True, color)
-            rect = surf.get_rect(center=(self.screen.get_width() // 2, y))
-            self.screen.blit(surf, rect)
-            y += 30
-
-    def _draw_waveform(self, x, y, width, height):
-        data = self.audio.get_waveform(self.selected_pad_id)
-        if data is None:
-            return
-            
-        # Draw background
-        rect = pygame.Rect(x, y, width, height)
-        pygame.draw.rect(self.screen, (20, 20, 30), rect)
-        pygame.draw.rect(self.screen, (60, 60, 80), rect, 1)
-        
-        # Downsample
-        if len(data.shape) > 1:
-            samples = np.mean(data, axis=1)
-        else:
-            samples = data
-            
-        if len(samples) == 0:
-            return
-            
-        step = max(1, len(samples) // width)
-        view = samples[::step]
-        
-        max_amp = 32768.0
-        center_y = y + height // 2
-        scale = (height / 2) / max_amp
-        
-        points = []
-        for i, samp in enumerate(view):
-            if i >= width: break
-            px = x + i
-            py = center_y - samp * scale
-            points.append((px, py))
-            
-        if len(points) > 1:
-            pygame.draw.lines(self.screen, (100, 200, 100), False, points)
-            
-        # Draw trim markers
-        state = self.audio.get_pad_state(self.selected_pad_id)
-        if state:
-            start_x = x + int(state['trim_start'] * width)
-            end_x = x + int(state['trim_end'] * width)
-            
-            pygame.draw.line(self.screen, (255, 255, 0), (start_x, y), (start_x, y + height), 2)
-            pygame.draw.line(self.screen, (255, 0, 0), (end_x, y), (end_x, y + height), 2)
-            
-            # Draw status text
-            status_text = []
-            if state['reverse']: status_text.append("REV")
-            if state['normalized']: status_text.append("NORM")
-            
-            if status_text:
-                text = " ".join(status_text)
-                surf = self.font.render(text, True, (255, 100, 100))
-                self.screen.blit(surf, (x + 5, y + 5))
-
-    def _draw_step_grid(self, x_start: int, y_start: int, width: int, height: int):
-        """Draw one row of steps per instrument (track)."""
-        current_pattern = self.seq.pattern
-        max_steps = current_pattern.beats_per_bar
-        for track in current_pattern.tracks:
-            max_steps = max(max_steps, len(track.steps))
-        
-        num_tracks = len(current_pattern.tracks)
-
-        row_gap = 4
-        label_width = 120  # left side for instrument names
-        grid_width = width - label_width - 10
-
-        row_height = (height - row_gap * (num_tracks + 1)) // num_tracks
-        step_gap = 2
-        step_width = (grid_width - step_gap * (max_steps + 1)) // max_steps
-        step_height = row_height
-
-        for track_idx, track in enumerate(current_pattern.tracks):
-            row_y = y_start + row_gap + track_idx * (row_height + row_gap)
-
-            # Draw instrument label on the left
-            pad_id = track.pad_id
-            pad_cfg = next(p for p in self.config.pads if p.id == pad_id)
-            
-            status_flags = []
-            if track.solo: status_flags.append("S")
-            if track.mute: status_flags.append("M")
-            if track.probability < 1.0: status_flags.append(f"{int(track.probability*100)}%")
-            status_str = f" [{' '.join(status_flags)}]" if status_flags else ""
-
-            label_text = f"{pad_cfg.name} [{pad_cfg.key.upper()}]{status_str}"
-            
-            label_color = (180, 180, 200)
-            if track.mute:
-                label_color = (100, 100, 110)
-            if track.solo:
-                label_color = (255, 220, 150)
-            
-            if pad_id == self.selected_pad_id:
-                label_color = (255, 255, 100)
-
-            label_surface = self.font.render(label_text, True, label_color)
-            label_rect = label_surface.get_rect()
-            label_rect.midleft = (x_start, row_y + row_height // 2)
-            self.screen.blit(label_surface, label_rect)
-
-            # Draw the row of steps for this track
-            steps_in_track = len(track.steps)
-            for step_idx in range(steps_in_track):
-                x = x_start + label_width + step_gap + step_idx * (step_width + step_gap)
-                y = row_y
-
-                rect = pygame.Rect(x, y, step_width, step_height)
-
-                step = track.steps[step_idx]
-
-                base_colour = (30, 30, 40)          # empty
-                border_color = (50, 50, 60)
-                
-                if step.state == 1:
-                    base_colour = (80, 80, 120)     # this instrument plays here
-                    border_color = (100, 100, 150)
-                elif step.state == 2:
-                    base_colour = (140, 140, 190)   # accented
-                    border_color = (180, 180, 220)
-
-                # Highlight current step column
-                current_track_step = self.seq.total_steps % steps_in_track
-                if step_idx == current_track_step and self.seq.playing:
-                    # brighten column
-                    if step.state > 0:
-                        base_colour = (220, 200, 100)   # active and current
-                    else:
-                        base_colour = (100, 100, 80)   # current but empty
-
-                pygame.draw.rect(self.screen, base_colour, rect, border_radius=2)
-                pygame.draw.rect(self.screen, border_color, rect, 1, border_radius=2)
-                
-                # Highlight selected step
-                if pad_id == self.selected_pad_id and step_idx == self.selected_step_idx:
-                    pygame.draw.rect(self.screen, (255, 255, 255), rect, 2, border_radius=2)
-
-    def _draw_status_line(self):
-        text_colour = (200, 200, 210)
-
-        if self.selected_step_idx is not None and self.selected_pad_id is not None:
-            # Show step info
-            track = self._track_for_pad(self.selected_pad_id)
-            if self.selected_step_idx < len(track.steps):
-                step = track.steps[self.selected_step_idx]
-                status = f"STEP EDIT: Reverb {int(step.reverb_send*100)}% | Delay {int(step.delay_send*100)}%  ([/]: Rev, Shift+[/]: Dly)"
-                surf = self.font.render(status, True, (255, 200, 100))
-                rect = surf.get_rect(bottomleft=(20, self.screen.get_height() - 20))
-                self.screen.blit(surf, rect)
-                return
-
-        bpm_text = f"BPM: {int(self.seq.pattern.bpm)}"
-        mode_text = "PLAY" if self.seq.playing else "STOP"
-        rec_text = "REC" if self.seq.recording else "   "
-        swing_text = f"Swing: {int(self.seq.swing * 100)}%"
-        
-        pat_text = f"Pat: {self.seq.current_pattern_key}"
-        if self.seq.next_pattern_key != self.seq.current_pattern_key:
-            pat_text += f" -> {self.seq.next_pattern_key}"
-        if self.seq.fill_active:
-            pat_text += " [FILL]"
-
-        status = f"{bpm_text}  |  {mode_text}  |  {rec_text}  |  {swing_text}  |  {pat_text}"
-        
-        # Draw status bar background
-        bar_height = 30
-        bar_rect = pygame.Rect(0, self.screen.get_height() - bar_height, self.screen.get_width(), bar_height)
-        pygame.draw.rect(self.screen, (30, 30, 40), bar_rect)
-        pygame.draw.line(self.screen, (60, 60, 80), (0, self.screen.get_height() - bar_height), (self.screen.get_width(), self.screen.get_height() - bar_height))
-
-        surface = self.font.render(status, True, text_colour)
-        rect = surface.get_rect()
-        rect.midbottom = (self.screen.get_width() // 2, self.screen.get_height() - 5)
-
-        self.screen.blit(surface, rect)
-        
-        # Draw help hint
-        hint_surf = self.help_font.render("Press 'H' for Help", True, (100, 100, 120))
-        self.screen.blit(hint_surf, (self.screen.get_width() - 120, self.screen.get_height() - 25))
 
     def _track_for_pad(self, pad_id: int) -> Track:
         for t in self.seq.pattern.tracks:
             if t.pad_id == pad_id:
                 return t
         raise KeyError(pad_id)
-
-    def save_session(self, filename="session.json"):
-        data = {
-            'sequencer': self.seq.get_state(),
-            'audio': self.audio.get_state()
-        }
-        with open(filename, 'w') as f:
-            json.dump(data, f, indent=2)
-        print(f"Session saved to {filename}")
-
-    def load_session(self, filename="session.json"):
-        if not os.path.exists(filename):
-            print(f"Session file {filename} not found.")
-            return
-        
-        with open(filename, 'r') as f:
-            data = json.load(f)
-            
-        self.seq.load_state(data.get('sequencer', {}))
-        self.audio.load_state(data.get('audio', {}))
-        print(f"Session loaded from {filename}")
