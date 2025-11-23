@@ -7,6 +7,9 @@ authors = [
 ]
 dependencies = [
     "pygame>=2.0.0",
+    "sounddevice",
+    "soundfile",
+    "numpy",
 ]
 requires-python = ">=3.8"
 

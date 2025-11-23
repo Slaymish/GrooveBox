@@ -11,7 +11,7 @@ class GrooveboxUI:
     def __init__(self, config: GrooveboxConfig):
         pygame.init()
         pygame.display.set_caption("GrooveBox Engine")
-        self.screen = pygame.display.set_mode((800, 600))
+        self.screen = pygame.display.set_mode((1024, 768))
         self.config = config
         self.audio = AudioEngine(config)
         self.pattern_a = make_empty_pattern(config)
@@ -22,6 +22,7 @@ class GrooveboxUI:
         self.help_font = pygame.font.SysFont("Arial", 14)
         self.key_to_pad = {pad.key: pad.id for pad in config.pads}
         self.selected_pad_id = None
+        self.selected_step_idx = None
         self.show_help = False
 
     def run(self):
@@ -36,20 +37,154 @@ class GrooveboxUI:
                     self.handle_keydown(event.key)
                 elif event.type == pygame.KEYUP:
                     self.handle_keyup(event.key)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    self.handle_mouse_click(event.pos, event.button)
             self.seq.tick()
             self.draw()
             clock.tick(60)
         pygame.quit()
+
+    def handle_mouse_click(self, pos, button):
+        x, y = pos
+        padding = 20
+        waveform_height = 80
+        pad_start_y = padding + waveform_height + padding
+        pad_area_height = 180
+        pad_rows = 2
+        pad_cols = 4
+        pad_area_width = self.screen.get_width() - 2 * padding
+        pad_width = (pad_area_width - (pad_cols + 1) * padding) // pad_cols
+        pad_height = (pad_area_height - (pad_rows + 1) * padding) // pad_rows
+
+        # Check Pads
+        if pad_start_y <= y <= pad_start_y + pad_area_height:
+            # Calculate col/row
+            # x = padding + col * (pad_width + padding)
+            # col = (x - padding) / (pad_width + padding)
+            col = (x - padding) // (pad_width + padding)
+            row = (y - pad_start_y) // (pad_height + padding)
+            
+            if 0 <= col < pad_cols and 0 <= row < pad_rows:
+                # Check if inside the rect (ignoring padding gap)
+                rect_x = padding + col * (pad_width + padding)
+                rect_y = pad_start_y + row * (pad_height + padding)
+                if rect_x <= x <= rect_x + pad_width and rect_y <= y <= rect_y + pad_height:
+                    idx = row * pad_cols + col
+                    if idx < len(self.config.pads):
+                        pad_id = self.config.pads[idx].id
+                        
+                        if button == 1: # Left click
+                            # Select track
+                            self.selected_pad_id = pad_id
+                            # Trigger sound
+                            self.seq.handle_pad_press(pad_id)
+                        elif button == 3: # Right click
+                            # Maybe mute/solo context menu? Or just toggle mute?
+                            # Request says "click on tracks to mute/solo"
+                            # Let's toggle mute on right click
+                            track = self._track_for_pad(pad_id)
+                            track.mute = not track.mute
+
+        # Check Grid
+        grid_y_start = pad_start_y + pad_area_height + padding
+        grid_height = 180
+        
+        if grid_y_start <= y <= grid_y_start + grid_height:
+            current_pattern = self.seq.pattern
+            max_steps = current_pattern.beats_per_bar
+            for track in current_pattern.tracks:
+                max_steps = max(max_steps, len(track.steps))
+            
+            num_tracks = len(current_pattern.tracks)
+            row_gap = 4
+            label_width = 120
+            grid_width = pad_area_width - label_width - 10
+            row_height = (grid_height - row_gap * (num_tracks + 1)) // num_tracks
+            step_gap = 2
+            step_width = (grid_width - step_gap * (max_steps + 1)) // max_steps
+
+            # Check which track row
+            # y = grid_y_start + row_gap + track_idx * (row_height + row_gap)
+            # track_idx = (y - grid_y_start - row_gap) / (row_height + row_gap)
+            track_idx = (y - grid_y_start - row_gap) // (row_height + row_gap)
+            
+            if 0 <= track_idx < num_tracks:
+                track = current_pattern.tracks[track_idx]
+                
+                # Check if clicked on label (Mute/Solo toggle?)
+                if x < padding + label_width:
+                    # Clicked on label
+                    if button == 1: # Left click
+                        # Select track
+                        self.selected_pad_id = track.pad_id
+                    elif button == 3: # Right click
+                        # Toggle Mute
+                        track.mute = not track.mute
+                else:
+                    # Check which step
+                    # x = padding + label_width + step_gap + step_idx * (step_width + step_gap)
+                    step_idx = (x - (padding + label_width + step_gap)) // (step_width + step_gap)
+                    
+                    if 0 <= step_idx < len(track.steps):
+                        step = track.steps[step_idx]
+                        mods = pygame.key.get_mods()
+                        shift = mods & pygame.KMOD_SHIFT
+                        
+                        if shift:
+                            # Select step for editing
+                            self.selected_pad_id = track.pad_id
+                            self.selected_step_idx = step_idx
+                        else:
+                            if button == 1: # Left click
+                                # Toggle state
+                                step.state = (step.state + 1) % 3
+                            elif button == 3: # Right click
+                                # Clear step
+                                step.state = 0
+                            # Deselect step if we toggle
+                            self.selected_step_idx = None
 
     def handle_keydown(self, key):
         mods = pygame.key.get_mods()
         shift = mods & pygame.KMOD_SHIFT
         ctrl = mods & pygame.KMOD_CTRL
 
+        if key == pygame.K_ESCAPE:
+            self.selected_step_idx = None
+            return
+
+        if self.selected_step_idx is not None and self.selected_pad_id is not None:
+            # Step editing mode
+            track = self._track_for_pad(self.selected_pad_id)
+            if self.selected_step_idx < len(track.steps):
+                step = track.steps[self.selected_step_idx]
+                
+                if key == pygame.K_LEFTBRACKET:
+                    if shift:
+                        step.delay_send = max(0.0, step.delay_send - 0.1)
+                    else:
+                        step.reverb_send = max(0.0, step.reverb_send - 0.1)
+                elif key == pygame.K_RIGHTBRACKET:
+                    if shift:
+                        step.delay_send = min(1.0, step.delay_send + 0.1)
+                    else:
+                        step.reverb_send = min(1.0, step.reverb_send + 0.1)
+                # Allow other keys to pass through?
+                # Maybe return if we handled it
+                if key in [pygame.K_LEFTBRACKET, pygame.K_RIGHTBRACKET]:
+                    return
+
         if key == pygame.K_SPACE:
             self.seq.toggle_play()
         elif key == pygame.K_r:
             self.seq.toggle_record()
+        elif key == pygame.K_q:
+            self.seq.quantise_strength = max(0.0, self.seq.quantise_strength - 0.1)
+        elif key == pygame.K_w:
+            self.seq.quantise_strength = min(1.0, self.seq.quantise_strength + 0.1)
+        elif key == pygame.K_DELETE or key == pygame.K_BACKSPACE:
+            if self.selected_pad_id is not None:
+                self.seq.clear_last_bar(self.selected_pad_id)
         elif key == pygame.K_UP:
             self.seq.set_bpm(self.seq.pattern.bpm + 5)
         elif key == pygame.K_DOWN:
@@ -262,14 +397,14 @@ class GrooveboxUI:
             "CONTROLS",
             "----------------",
             "SPACE: Play/Pause | R: Record | TAB: Switch Pattern (A/B) | F: Fill (Hold)",
-            "UP/DOWN: BPM | LEFT/RIGHT: Swing",
+            "UP/DOWN: BPM | LEFT/RIGHT: Swing | Q/W: Quantise",
             "1-6: Trigger Pad / Select Track",
             "",
             "TRACK EDITING (Selected Track)",
             "----------------",
             "[: Decrease Length | ]: Increase Length",
             "Shift + [/]: Rotate Pattern",
-            "M: Mute | S: Solo",
+            "M: Mute | S: Solo | DEL: Clear Last Bar",
             "X: Randomize | E: Euclidean Fill (+Shift to reduce)",
             "P: Probability (+Shift to increase)",
             "",
@@ -434,9 +569,24 @@ class GrooveboxUI:
 
                 pygame.draw.rect(self.screen, base_colour, rect, border_radius=2)
                 pygame.draw.rect(self.screen, border_color, rect, 1, border_radius=2)
+                
+                # Highlight selected step
+                if pad_id == self.selected_pad_id and step_idx == self.selected_step_idx:
+                    pygame.draw.rect(self.screen, (255, 255, 255), rect, 2, border_radius=2)
 
     def _draw_status_line(self):
         text_colour = (200, 200, 210)
+
+        if self.selected_step_idx is not None and self.selected_pad_id is not None:
+            # Show step info
+            track = self._track_for_pad(self.selected_pad_id)
+            if self.selected_step_idx < len(track.steps):
+                step = track.steps[self.selected_step_idx]
+                status = f"STEP EDIT: Reverb {int(step.reverb_send*100)}% | Delay {int(step.delay_send*100)}%  ([/]: Rev, Shift+[/]: Dly)"
+                surf = self.font.render(status, True, (255, 200, 100))
+                rect = surf.get_rect(bottomleft=(20, self.screen.get_height() - 20))
+                self.screen.blit(surf, rect)
+                return
 
         bpm_text = f"BPM: {int(self.seq.pattern.bpm)}"
         mode_text = "PLAY" if self.seq.playing else "STOP"

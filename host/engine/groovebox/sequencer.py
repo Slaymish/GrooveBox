@@ -7,6 +7,10 @@ from audio import AudioEngine
 class Step:
     state: int = 0
     # 0 = off, 1 = normal, 2 = accented
+    offset: float = 0.0
+    # -0.5 to 0.5, fraction of a step duration
+    reverb_send: float = 0.0
+    delay_send: float = 0.0
 
 
 @dataclass
@@ -44,8 +48,10 @@ class Sequencer:
         self.current_step = 0
         self.total_steps = 0
         self.swing = 0.0  # 0.0 to 0.5
+        self.quantise_strength = 1.0 # 0.0 = raw, 1.0 = grid
         self.last_tick_time = time.monotonic()
         self.undo_stack = []
+        self.suppressed_steps = set() # (pad_id, step_idx) to skip playing once
 
     def set_bpm(self, bpm: float):
         # Update all patterns to keep BPM synced for now
@@ -113,10 +119,16 @@ class Sequencer:
                 continue
 
             step_idx = self.total_steps % len(track.steps)
+            
+            # Check suppression
+            if (track.pad_id, step_idx) in self.suppressed_steps:
+                self.suppressed_steps.remove((track.pad_id, step_idx))
+                continue
+
             step = track.steps[step_idx]
             if step.state > 0:
                 velocity = 0.7 if step.state == 1 else 1.0
-                self.audio.play_sound(track.pad_id, velocity=velocity)
+                self.audio.play_sound(track.pad_id, velocity=velocity, reverb_send=step.reverb_send, delay_send=step.delay_send)
 
     def handle_pad_press(self, pad_id: int):
         # live play
@@ -128,9 +140,135 @@ class Sequencer:
             track = self._track_for_pad(pad_id)
             if not track.steps:
                 return
-            step_idx = self.total_steps % len(track.steps)
-            step = track.steps[step_idx]
-            step.state = (step.state + 1) % 3  # cycle through 0,1,2
+            
+            # Calculate which step we are closest to
+            now = time.monotonic()
+            step_duration = self._step_duration_seconds()
+            time_since_last_tick = now - self.last_tick_time
+            
+            # self.total_steps points to the NEXT step to be played
+            next_step_idx = self.total_steps % len(track.steps)
+            prev_step_idx = (self.total_steps - 1) % len(track.steps)
+            
+            offset = time_since_last_tick / step_duration # 0.0 to 1.0 (approx)
+            
+            target_step_idx = next_step_idx
+            recorded_offset = 0.0
+
+            if offset < 0.5:
+                # Closer to previous step (late)
+                target_step_idx = prev_step_idx
+                recorded_offset = offset
+            else:
+                # Closer to next step (early)
+                target_step_idx = next_step_idx
+                recorded_offset = offset - 1.0
+                
+                # If we are recording into the upcoming step, suppress it from playing
+                # so we don't hear a double trigger (flam)
+                self.suppressed_steps.add((pad_id, target_step_idx))
+            
+            # Apply quantise strength
+            # If strength is 1.0, offset becomes 0.0
+            # If strength is 0.0, offset stays as is
+            final_offset = recorded_offset * (1.0 - self.quantise_strength)
+
+            step = track.steps[target_step_idx]
+            step.state = 1
+            step.offset = final_offset
+
+    def handle_pad_press(self, pad_id: int):
+        # live play
+        self.audio.play_sound(pad_id)
+
+        # record into pattern if in record mode
+        if self.recording and self.playing:
+            self.push_undo()
+            track = self._track_for_pad(pad_id)
+            if not track.steps:
+                return
+            
+            # Calculate which step we are closest to
+            now = time.monotonic()
+            step_duration = self._step_duration_seconds()
+            time_since_last_tick = now - self.last_tick_time
+            
+            # Current step index in the track
+            current_step_idx = self.total_steps % len(track.steps)
+            
+            # Determine if we are closer to the current step or the next one
+            # Note: last_tick_time is when current_step started
+            
+            offset = time_since_last_tick / step_duration # 0.0 to 1.0 (approx)
+            
+            target_step_idx = current_step_idx
+            recorded_offset = 0.0
+
+            if offset < 0.5:
+                # Closer to current step (late)
+                target_step_idx = current_step_idx
+                recorded_offset = offset
+            else:
+                # Closer to next step (early)
+                target_step_idx = (current_step_idx + 1) % len(track.steps)
+                recorded_offset = offset - 1.0
+            
+            # Apply quantise strength
+            # If strength is 1.0, offset becomes 0.0
+            # If strength is 0.0, offset stays as is
+            final_offset = recorded_offset * (1.0 - self.quantise_strength)
+
+            step = track.steps[target_step_idx]
+            step.state = 2 # Record as accent by default? Or cycle?
+            # If we are just tapping, maybe set to normal (1) or accent (2)
+            # Existing logic cycled. Let's just set to 1 (Normal) if 0, else cycle?
+            # But usually live recording just sets it to ON.
+            step.state = 1
+            step.offset = final_offset
+
+    def clear_last_bar(self, pad_id: int):
+        self.push_undo()
+        track = self._track_for_pad(pad_id)
+        if not track.steps:
+            return
+        
+        # Clear the last 'beats_per_bar' steps
+        # Or just clear the whole track if it's 1 bar long?
+        # Assuming "last bar" means the steps corresponding to the last bar played or just the whole pattern if it's short.
+        # Let's just clear the whole track for now as patterns seem to be 1 bar by default?
+        # Wait, resize_track allows longer tracks.
+        # If track is 32 steps and beats_per_bar is 16 (4 bars of 4?), then "last bar" is ambiguous.
+        # Let's assume it clears the steps currently being played (current bar).
+        
+        bar_length = self.pattern.beats_per_bar
+        current_bar_start = (self.total_steps // bar_length) * bar_length
+        # This is global total steps.
+        
+        # Map to track steps
+        track_len = len(track.steps)
+        # We want to clear the steps that correspond to the "current bar" in the track.
+        # If track is shorter than a bar, clear all.
+        # If track is longer, clear the segment.
+        
+        # Simplified: Clear the whole track for now, or maybe just the last 4 beats added?
+        # The user asked for "clear last bar".
+        # Let's clear the steps in the range [current_step - bar_length : current_step] (modulo length)
+        
+        # Actually, usually "clear last bar" is used when you messed up the last loop.
+        # So we should clear the steps that were just played.
+        
+        # Let's clear the last 4 beats (assuming 4/4).
+        steps_to_clear = 4 
+        # Or use beats_per_bar
+        steps_to_clear = self.pattern.beats_per_bar
+        
+        current_idx = self.total_steps % track_len
+        
+        # We want to clear the previous 'steps_to_clear' steps ending at current_idx.
+        for i in range(steps_to_clear):
+            idx = (current_idx - 1 - i) % track_len
+            track.steps[idx].state = 0
+            track.steps[idx].offset = 0.0
 
     def resize_track(self, pad_id: int, new_length: int):
         self.push_undo()
@@ -182,11 +320,13 @@ class Sequencer:
     def get_state(self):
         return {
             'patterns': {k: asdict(v) for k, v in self.patterns.items()},
-            'swing': self.swing
+            'swing': self.swing,
+            'quantise_strength': self.quantise_strength
         }
 
     def load_state(self, state):
         self.swing = state.get('swing', 0.0)
+        self.quantise_strength = state.get('quantise_strength', 1.0)
         patterns_data = state.get('patterns', {})
         for key, p_data in patterns_data.items():
             if key in self.patterns:
