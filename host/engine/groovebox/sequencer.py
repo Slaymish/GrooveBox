@@ -51,9 +51,9 @@ class Sequencer:
             return base
         
         if self.current_step % 2 == 0:
-            return base * (1.0 - self.swing)
-        else:
             return base * (1.0 + self.swing)
+        else:
+            return base * (1.0 - self.swing)
 
     def tick(self):
         """Call this from the main loop, it advances steps at the right time."""

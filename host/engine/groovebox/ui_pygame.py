@@ -7,6 +7,7 @@ import pygame
 class GrooveboxUI:
     def __init__(self, config: GrooveboxConfig):
         pygame.init()
+        pygame.display.set_caption("GrooveBox Engine")
         self.screen = pygame.display.set_mode((800, 600))
         self.config = config
         self.audio = AudioEngine(config)
