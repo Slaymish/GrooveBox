@@ -2,11 +2,11 @@
   "bpm": 90,
   "beats_per_bar": 16,
   "pads": [
-    {"id": 0, "key": "q", "name": "Kick",  "sample": "samples/kick.wav"},
-    {"id": 1, "key": "w", "name": "Snare", "sample": "samples/snare.wav"},
-    {"id": 2, "key": "e", "name": "Hat",   "sample": "samples/hat.wav"},
-    {"id": 3, "key": "c", "name": "Clap",  "sample": "samples/clap.wav"},
-    {"id": 4, "key": "a", "name": "Stab1", "sample": "samples/stab1.wav"},
-    {"id": 7, "key": "f", "name": "FX",    "sample": "samples/fx.wav"}
+    {"id": 0, "key": "1", "name": "Kick",  "sample": "samples/kicks/kick.wav"},
+    {"id": 1, "key": "2", "name": "Snare", "sample": "samples/snares/snare.wav"},
+    {"id": 2, "key": "3", "name": "Hat",   "sample": "samples/hats/hat.wav"},
+    {"id": 3, "key": "4", "name": "Clap",  "sample": "samples/claps/clap.wav"},
+    {"id": 4, "key": "5", "name": "Stab1", "sample": "samples/stabs/stab1.wav"},
+    {"id": 7, "key": "6", "name": "FX",    "sample": "samples/fx/fx.wav"}
   ]
 }
