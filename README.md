@@ -1,49 +1,30 @@
-# Groovebox
+# GrooveBox
 
-Tiny Python and C++-based groovebox for live beat sketching on your PC using keyboard input.  
-Long term: acts as the brain for a DIY hardware controller.
+A desktop groovebox for sketching beats with a computer keyboard. Python runs the sequencer and the interface, and a small C++ engine does the audio.
 
-## Next-steps
+## What it does
 
-* **Scenes & pattern management**
+- Six sample pads, kick, snare, hat, clap, stab and fx, loaded from `samples/` through `config/pad.json`.
+- A step sequencer with patterns per track, so one track can hold more than one pattern and switch between them while the bar runs.
+- Scenes, which store the current combination of track patterns and bring it back in one keypress.
+- Fill, for varying a pattern for a single bar.
 
-  * [x] Pattern A/B per track, bar-synced switching
-  * [ ] Simple “scene” objects (which pattern each track uses)
-  * [ ] Queue scene changes on next bar / 4 bars
+## Running it
 
-* **Performance gestures**
+Python 3.8 or newer. The C++ engine is built through pybind11 when the package installs.
 
-  * [ ] Per-track mute / solo with clear UI state
-  * [ ] One-bar fill mode (alt pattern or stutter) that auto-reverts
-  * [ ] A few “macro” gestures (eg: drop all but kick for 1 bar; temporary LPF sweep)
+```bash
+python3 -m venv venv
+venv/bin/pip install -e host/engine/
+./run.sh
+```
 
-* **Sample library & kits**
+`run.sh` installs nothing. It runs `venv/bin/python3 host/engine/groovebox/main.py`, so the virtual environment has to exist first and be called `venv`.
 
-  * [ ] Structured local library (kicks/snares/hats/etc) with rescan
-  * [ ] In-app browser to audition + assign samples to pads
-  * [ ] Kits: save / load pad→sample mappings while playing
+The audio engine has two backends. `audio_sd.py` uses sounddevice and `audio_pygame.py` uses pygame's mixer. The pygame one is what the app runs today.
 
-* **Waveform & editing**
+## State
 
-  * [ ] Waveform strip for selected pad (min/max envelope)
-  * [ ] Start / end trim, reverse, normalise on that strip
-  * [ ] Visual markers for start/end & current play region
+Worked on through November 2025. The README used to end with a next steps list, which belongs in the issue tracker instead. Nothing is packaged for distribution yet, so it runs from source.
 
-* **Pattern tools & variation**
-
-  * [ ] Per-step / per-track probability for hits
-  * [ ] Shift / rotate patterns per track
-  * [ ] Euclidean fill for a chosen track (quick percussion generator)
-
-* **Persistence & export**
-
-  * [ ] Session save / load (patterns, kits, BPM, swing, quantise, scenes)
-  * [ ] Export loop to WAV (and later per-track stems)
-  * [ ] Export pattern to MIDI
-
-* **Future AI hook (once you’re bored)**
-
-  * [ ] Log patterns for yourself as training data
-  * [ ] Define `suggest_pattern(pattern, mode)` API
-  * [ ] First “AI” = smarter heuristics (eg hat completion), model later
-    * [ ] Later: integrate with local LLM for pattern suggestions
+MIT licensed.
